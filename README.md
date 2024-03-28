@@ -1,6 +1,8 @@
 #Introduction
 
-test
+This is a fork of Browsertrix Crawler, with an added deduplication feature. This fork is based on the July 9 2022 version (**0.7.0b**) and is no longer compatible with later versions.
+
+The original README follows below.
 
 # Browsertrix Crawler
 
