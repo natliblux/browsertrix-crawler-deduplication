@@ -292,6 +292,18 @@ class ArgParser {
         describe: "if set, wait for network idle after page load and after behaviors are done (in seconds)",
         type: "number",
         default: 10
+      },
+      
+      "crossCrawlDeduplicationPolicy": {
+        describe: "Use a Redis server to store page hashes and perform cross-crawl deduplication. Can either use curl as hashing basis, or a full crawl of the page (slower).",
+        type: "string",
+        default: "none",
+        choices: ["none", "curl", "crawl"]
+      },
+      
+      "crossCrawlDeduplicationRedisUrl": {
+        describe: "The URL of the Redis store to use for storing cross-crawl deduplication hashes",
+        type: "string"
       }
     };
   }
