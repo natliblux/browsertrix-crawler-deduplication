@@ -16,6 +16,7 @@ const HTTP_AGENT = require("http").Agent();
 const fetch = require("node-fetch");
 const puppeteer = require("puppeteer-core");
 const { Cluster } = require("puppeteer-cluster");
+const { Page } = require("puppeteer-core");
 const { RedisCrawlState, MemoryCrawlState } = require("./util/state");
 const AbortController = require("abort-controller");
 const Sitemapper = require("sitemapper");
@@ -24,7 +25,7 @@ const yaml = require("js-yaml");
 
 const warcio = require("warcio");
 
-const behaviors = fs.readFileSync(path.join(__dirname, "node_modules", "browsertrix-behaviors", "dist", "behaviors.js"), {encoding: "utf8"});
+const behaviors = fs.readFileSync(path.join(__dirname, "behaviors.js"), {encoding: "utf8"});
 
 const  TextExtract  = require("./util/textextract");
 const { initStorage, getFileSize, getDirSize, interpolateFilename } = require("./util/storage");
@@ -38,6 +39,8 @@ const { BEHAVIOR_LOG_FUNC, HTML_TYPES, DEFAULT_SELECTORS } = require("./util/con
 
 const { BlockRules } = require("./util/blockrules");
 
+const crypto = require('crypto')
+const shasum = crypto.createHash('sha1')
 
 // ============================================================================
 class Crawler {
@@ -104,6 +107,13 @@ class Crawler {
     this.sizeExceeded = false;
     this.finalExit = false;
     this.behaviorLastLine = null;
+    
+    // The Redis URL for cross-crawl deduplication
+    this.redisDedup = null;
+    this.dedupRegexPatterns = new Array();
+    
+    // The total count of skipped pages due to deduplication
+    this.totalSkipped = 0;
   }
 
   statusLog(...args) {
@@ -155,26 +165,59 @@ class Crawler {
 
       let redis;
 
-      while (true) {
+	  // Do not wait for Redis connection indefinitely.
+	  let redisRetryCount = 0;
+	  const maxRedisRetries = 10;
+
+      while (redisRetryCount < maxRedisRetries) {
         try {
           redis = await initRedis(redisUrl);
           break;
         } catch (e) {
           //throw new Error("Unable to connect to state store Redis: " + redisUrl);
-          console.warn(`Waiting for redis at ${redisUrl}`);
-          await this.sleep(3);
+          console.warn(`Waiting for redis at ${redisUrl}, ${redisRetryCount} out of ${maxRedisRetries} retries`);
+          await this.sleep(500);
         }
       }
-
-      this.statusLog(`Storing state via Redis ${redisUrl} @ key prefix "${this.crawlId}"`);
-
-      this.crawlState = new RedisCrawlState(redis, this.params.crawlId, this.params.timeout * 2, os.hostname());
-
+      
+      // Check if Redis connection is OK
+      if (redisRetryCount < maxRedisRetries - 1) {
+		  this.statusLog(`Storing state via Redis ${redisUrl} @ key prefix "${this.crawlId}"`);
+	      this.crawlState = new RedisCrawlState(redis, this.params.crawlId, this.params.timeout * 2, os.hostname());
+      } else {
+	     this.statusLog(`Redis connection has failed. State is: ${this.redis.state}. Storing state in memory instead.`);
+         this.crawlState = new MemoryCrawlState();
+	  }
+	  
     } else {
       this.statusLog("Storing state in memory");
-
       this.crawlState = new MemoryCrawlState();
     }
+
+	// -----------------------------------------------------
+	// Check if we have activated cross-crawl deduplication.
+	// -----------------------------------------------------
+	if (this.params.crossCrawlDeduplicationPolicy === "curl" || 
+	    this.params.crossCrawlDeduplicationPolicy === "crawl") {
+			const redisDedupUrl = this.params.crossCrawlDeduplicationRedisUrl;
+			
+			// Set up Redis for deduplication
+			if (!redisDedupUrl) {
+				throw new Error("Cross-crawl deduplication policy selected but no redis URL specified");
+			}
+			
+			this.redisDedup = await initRedis(redisDedupUrl);
+			console.log("Successfully set up Redis connection for cross-crawl deduplication");
+			
+			// Set up the deduplication regex patterns
+			const dedupRegexPatternKeys = await this.redisDedup.keys("dedup-regex-pattern:*");
+			for (var i = 0; i < dedupRegexPatternKeys.length; i++) {
+				this.dedupRegexPatterns.push(await this.redisDedup.get(dedupRegexPatternKeys[i]));
+				console.log("Loaded regex: " + dedupRegexPatternKeys[i] + " - " + await this.redisDedup.get(dedupRegexPatternKeys[i]))
+			}
+			console.log("Successfully loaded " + dedupRegexPatternKeys.length + " deduplication regex patterns");			 
+	}
+	
 
     if (this.params.saveState === "always" && this.params.saveStateInterval) {
       this.statusLog(`Saving crawl state every ${this.params.saveStateInterval} seconds, keeping last ${this.params.saveStateHistory} states`);
@@ -288,21 +331,30 @@ class Crawler {
       if (await this.crawlState.incFailCount()) {
         status = "failed";
       }
+      
+      // Write exception message to stats file
+      // ****************************
+      try {
+        await fsp.writeFile(this.params.statsFilename, JSON.stringify(e, Object.getOwnPropertyNames(e), 2), { flag: "a+" });
+      } catch (err) {
+        console.warn("Stats output failed", err);
+      }
+      // ****************************
 
     } finally {
       console.log(status);
-
       if (this.crawlState) {
-        await this.crawlState.setStatus(status);
-      }
+	  	await this.crawlState.setStatus(status);
+	  }
 
-      process.exit(this.exitCode);
+      process.exit(this.exitCode);      
     }
+    
   }
 
   _behaviorLog({data, type}) {
     let behaviorLine;
-
+	console.log("Behavior log: " + data);
     switch (type) {
     case "info":
       behaviorLine = JSON.stringify(data);
@@ -473,7 +525,7 @@ class Crawler {
     if (this.params.generateWACZ) {
       this.storage = initStorage();
     }
-
+      
     // Puppeteer Cluster init and options
     this.cluster = await Cluster.launch({
       concurrency: this.params.newContext,
@@ -506,7 +558,7 @@ class Crawler {
 
     for (let i = 0; i < this.params.scopedSeeds.length; i++) {
       const seed = this.params.scopedSeeds[i];
-      if (!await this.queueUrl(i, seed.url, 0, 0)) {
+      if (!await this.queueUrl(null, i, seed.url, 0, 0)) {
         if (this.limitHit) {
           break;
         }
@@ -521,6 +573,7 @@ class Crawler {
     await this.cluster.close();
 
     await this.serializeConfig(true);
+
 
     this.writeStats();
 
@@ -640,6 +693,18 @@ class Crawler {
       proc.on("close", (code) => resolve(code));
     });
   }
+  
+  awaitProcessGetResultAsString(proc) {
+	var result = '';
+    return new Promise((resolve) => {
+      proc.stdout.on('data', function(data) {
+         result += data.toString(); 
+      });
+      proc.on('close', function(code) {
+        resolve(result);
+      });
+    });
+  }
 
   async writeStats() {
     if (this.params.statsFilename) {
@@ -647,7 +712,8 @@ class Crawler {
       const workersRunning = this.cluster.workersBusy.length;
       const numCrawled = total - (await this.cluster.jobQueue.size()) - workersRunning;
       const limit = {max: this.params.limit || 0, hit: this.limitHit};
-      const stats = {numCrawled, workersRunning, total, limit};
+      const dedupedPages = this.totalSkipped;
+      const stats = {numCrawled, workersRunning, total, limit, dedupedPages};
 
       try {
         await fsp.writeFile(this.params.statsFilename, JSON.stringify(stats, null, 2));
@@ -718,10 +784,15 @@ class Crawler {
       return;
     }
 
-    for (const opts of selectorOptsList) {
+	for (const opts of selectorOptsList) {
       const links = await this.extractLinks(page, opts);
-      await this.queueInScopeUrls(seedId, links, depth, extraHops);
+      await this.queueInScopeUrls(page, seedId, links, depth, extraHops);
     }
+    
+    const specialElems = await this.extractSpecialLinks(page);
+    await this.queueInScopeUrls(page, seedId, specialElems, depth, extraHops);
+    
+    //console.log("Queued in special URLs: " + JSON.stringify(specialElems));
   }
 
   async netIdle(page) {
@@ -740,6 +811,37 @@ class Crawler {
     }
   }
 
+  async extractSpecialLinks(page) {
+    const results = [];
+
+	const selector= "iframe";
+	const extract = "src";
+    const loadFunc = (selector, extract) => {
+      return [...document.querySelectorAll(selector)].map(elem => elem.getAttribute(extract));
+    };
+
+    try {
+      const linkResults = await Promise.allSettled(page.frames().map(frame => frame.evaluate(loadFunc, selector, extract)));
+
+      if (linkResults) {
+        for (const linkResult of linkResults) {
+          if (!linkResult.value) continue;
+          for (const link of linkResult.value) {
+		    if (!link) continue;
+			if (link.includes("https://reporter-podcast.podigee.io")) {
+            	results.push(link);
+        	}
+          }
+        }
+      }
+
+    } catch (e) {
+      console.warn("Link Extraction failed", e);
+    }
+    
+    return results;
+  }
+  
   async extractLinks(page, {selector = "a[href]", extract = "href", isAttribute = false} = {}) {
     const results = [];
 
@@ -767,18 +869,18 @@ class Crawler {
 
     } catch (e) {
       console.warn("Link Extraction failed", e);
-    }
+    }    
     return results;
   }
 
-  async queueInScopeUrls(seedId, urls, depth, extraHops = 0) {
+  async queueInScopeUrls(page, seedId, urls, depth, extraHops = 0) {
     try {
       depth += 1;
       const seed = this.params.scopedSeeds[seedId];
 
       // new number of extra hops, set if this hop is out-of-scope (oos)
       const newExtraHops = extraHops + 1;
-
+	  
       for (const possibleUrl of urls) {
         const res = seed.isIncluded(possibleUrl, depth, newExtraHops);
 
@@ -787,9 +889,9 @@ class Crawler {
         }
 
         const {url, isOOS} = res;
-
-        if (url) {
-          await this.queueUrl(seedId, url, depth, isOOS ? newExtraHops : extraHops);
+	
+		if (url) {
+          await this.queueUrl(page, seedId, url, depth, isOOS ? newExtraHops : extraHops);
         }
       }
     } catch (e) {
@@ -809,7 +911,98 @@ class Crawler {
     }
   }
 
-  async queueUrl(seedId, url, depth, extraHops = 0) {
+async checkForCrossCrawlDeduplication(url, page) {
+	
+	// First check if we have activated cross-crawl deduplication.
+	if (!this.params.crossCrawlDeduplicationPolicy || 
+	     this.params.crossCrawlDeduplicationPolicy === "none") {
+			//this.statusLog("Not using cross-crawl deduplication policy.");
+			return true;
+	}
+	
+	if (!page) {
+		return true;
+	}
+	
+	if (!await this.isHTML(url)) {
+		return true;
+	}
+	
+	// The connection to Redis, for cross-crawl deduplication hashes, has been already done
+	// during the crawl initialization phase.
+	
+	// 	0. Compute content hashsum,
+	//		-- Sanitize the content string first
+	//	1. Compare with redis entry:
+	//		-- if present, do not add to new list
+	//		-- if not present, save (url, hash) in redis db, then add link to new list
+	//	2. Approve/reject url into/from frontier.
+    const startPage = new Date();
+    var text = "";
+    if (this.params.crossCrawlDeduplicationPolicy === "crawl") {
+		  //this.statusLog("Using cross-crawl deduplication policy: crawl");
+	      const pageToCheck = page;
+	      
+	      const title = await page.title;
+	      console.log("Dedup page title before=" + title);
+	      
+	      await pageToCheck.goto(url, this.gotoOpts);
+	      
+	      const title2 = await page.title;
+	      console.log("Dedup page title after=" + title2);
+	      
+	      const client = await pageToCheck.target().createCDPSession();
+	      const result = await client.send("DOM.getDocument", {"depth": -1, "pierce": true});
+		  text = await new TextExtract(result).parseTextFromDom();
+	}
+	else if (this.params.crossCrawlDeduplicationPolicy === "curl") {
+		  let result = await this.awaitProcessGetResultAsString(child_process.spawn("curl", ['-sL' , url]));
+  		    		  
+		  text = await result.toString('UTF8');
+	}
+	else {
+		  this.statusLog("Invalid cross-crawl deduplication policy: " + this.params.crossCrawlDeduplicationPolicy);
+		  return true;
+	}
+
+	const stopPage = new Date();
+	const durationPage = (stopPage - startPage);
+	
+	//console.log("Text before: " + text);
+	
+	// Remove unnecessary elements from the page. Note that the "g" flag indicates "replace all", and
+	// the "s" flag takes newlines into account as well.
+	for (var i = 0; i < this.dedupRegexPatterns.length; i++) {
+		text = text.replace(new RegExp(this.dedupRegexPatterns[i], 'gs'),"");
+	}
+
+	//console.log("Text after: " + text);
+
+	// Hash the extracted text
+	const hash = crypto.createHash('sha1').update(text).digest('hex');
+    
+    // The Redis key to check will be of the form: "dedupPolicy:url"
+    const key = this.params.crossCrawlDeduplicationPolicy + ":" + url;
+    
+	const val = await this.redisDedup.get(key);
+		  
+	if (val) {
+		if ((val === hash)) {
+			// The hash is the same, we skip this url (don't queue it).
+			this.totalSkipped++;
+			//console.log("Skipping URL because it has the same hash as a previous crawl: " + url);
+			return false;
+		}
+	}
+	  
+	// Update the hash for this url
+ 	await this.redisDedup.set(key,hash);
+    
+    // We can now queue this url
+    return true;
+  }
+  
+  async queueUrl(page, seedId, url, depth, extraHops = 0) {
     if (this.limitHit) {
       return false;
     }
@@ -828,7 +1021,12 @@ class Crawler {
     if (extraHops) {
       urlData.extraHops = extraHops;
     }
-    this.cluster.queue(urlData);
+
+	// Queue the job if cross-crawl deduplication allows it
+	if (await this.checkForCrossCrawlDeduplication(url, page)) {
+    	this.cluster.queue(urlData);
+	}
+    	
     return true;
   }
 
@@ -934,14 +1132,19 @@ class Crawler {
 
     // wait until pending, unless canceling
     while (this.exitCode !== 1) {
-      const res = await redis.get(`pywb:${this.params.collection}:pending`);
-      if (res === "0" || !res) {
-        break;
-      }
-
-      this.debugLog(`Still waiting for ${res} pending requests to finish...`);
-
-      await this.sleep(1);
+		try {
+		    const res = await redis.get(`pywb:${this.params.collection}:pending`);
+		    if (res === "0" || !res) {
+		      break;
+		    }
+		
+		    this.debugLog(`Still waiting for ${res} pending requests to finish...`);
+		    
+		    await this.sleep(1);
+	    } catch (e) {
+			console.warn("Could not communicate with Redis... exiting.");
+			break;
+	    }
     }
   }
 
@@ -958,7 +1161,7 @@ class Crawler {
 
     try {
       const { sites } = await sitemapper.fetch();
-      await this.queueInScopeUrls(seedId, sites, 0);
+      await this.queueInScopeUrls(null, seedId, sites, 0);
     } catch(e) {
       console.warn(e);
     }
