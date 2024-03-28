@@ -4,9 +4,9 @@ This is a fork of Browsertrix Crawler, with an added deduplication feature. This
 
 ## Deduplication
 
-This feature allows detecting identical pages across different crawls, and skipping them during the crawl. This enables to harvest large websites (such as news) daily in an efficient manner. If activated, this feature will remove pages already harvested during previous crawls that are identical, from the crawl frontier, 
+This feature allows detecting identical pages across different crawls, and skipping them during the crawl. This enables to harvest large websites (such as news) daily in an efficient manner. If activated, this feature will remove identical pages already harvested during previous crawls from the crawl frontier, 
 
-This module detects ''identical'' pages by computing a hash of the page and storing it in a Redis database. During each subsequent crawl, the module will compare these current hash of the page and the stored hash of the page, and will unqueue it if these two values match.
+This module detects ''identical'' pages by computing a hash of the page and storing it in a Redis database. During each subsequent crawl, the module compares the current hash of the page with the stored value, and will unqueue it if these two values match.
 
 Of course, there can be dynamic elements on the page that might change each day (timstamps, tokens, hidden variables). In order for avoid these elements disturb the hash, this module will first remove them from the page's code prior to computing the hash. It does so by applying a set of regular expressions. If an element within the page matches such a regular expression, it will be removed. *Note that such elements are only removed for purposes of hashing, the page itself that is harvested is not affected in any way*.
 
