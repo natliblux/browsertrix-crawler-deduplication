@@ -9,7 +9,8 @@ proxy:
   enable_wombat: true
 
 recorder:
-  dedup_policy: skip
+  dedup_policy: revisit
+  dedup_index_url: 'redis://172.17.0.3:6380/0/pywb:{coll}:cdxj'
   source_coll: live
   cache: always
   rollover_size: ${ROLLOVER_SIZE}

@@ -90,6 +90,7 @@ module.exports.chromeArgs = (proxy, userAgent=null, extraArgs=[]) => {
     ...(process.env.CHROME_FLAGS ?? "").split(" ").filter(Boolean),
     "--no-xshm", // needed for Chrome >80 (check if puppeteer adds automatically)
     "--no-sandbox",
+    "--disable-setuid-sandbox",
     "--disable-background-media-suspend",
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--autoplay-policy=no-user-gesture-required",
