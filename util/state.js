@@ -288,7 +288,12 @@ return 0;
   }
 
   async setStatus(status_) {
-    await this.redis.hset(`${this.key}:status`, this.uid, status_);
+	  // Only log the state to Redis if it is connected. We need to do this
+	  // otherwise the crawl is marked as "failed" in Browsertrix Cloud when it removes
+	  // the internal Redis container before exiting the crawler.
+	  if (this.redis.status === 'ready' || this.redis.status === 'connect') {
+    		await this.redis.hset(`${this.key}:status`, this.uid, status_);
+	  }
   }
 
   async getStatus() {
