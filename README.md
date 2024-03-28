@@ -1,8 +1,10 @@
 # Introduction
 
 This is a fork of Browsertrix Crawler, with an added deduplication feature. This fork is based on the July 9 2022 version (**0.7.0b**) -- please note that newer versions substantially differ from this code.
+
 ## Deduplication
-TThis feature allows detecting identical pages across different crawls, and skipping them if needed. If activated, this feature will remove already harvested identical pages from the crawl frontier, and thus other links emanating from this page will also not be queued.
+
+This feature allows detecting identical pages across different crawls, and skipping them during the crawl. This enables to harvest large websites (such as news) daily in an efficient manner. If activated, this feature will remove already harvested identical pages from the crawl frontier, and thus other links emanating from this page will also not be queued.
 
 This module detects ''identical'' pages by computing a hash of the page and storing it in a Redis database. During each subsequent crawl, the module will compare these current hash of the page and the stored hash of the page, and will unqueue it if these two values match.
 
