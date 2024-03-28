@@ -29,7 +29,7 @@ In order to activate this module, please launch the crawler with the following o
   - `crossCrawlDeduplicationRedisUrl`: the URL of the Redis store where the hashes and regexes should be stored
   - `crossCrawlDeduplicationPolicy`: the deduplication policy: `none` means non deduplication, `curl` means that the page code is fetched using `curl`, and `crawl` means that the page is fetched and interpreted with Puppeteer before being passed on to the deduplication module. We reccommend using `curl` because it is much faster than interpreting the entire page with behaviors using `crawl`.
 
-TThe original README follows below.
+The original README follows below.
 
 # Browsertrix Crawler
 
