@@ -1,8 +1,31 @@
-#Introduction
+# Introduction
 
-This is a fork of Browsertrix Crawler, with an added deduplication feature. This fork is based on the July 9 2022 version (**0.7.0b**) and is no longer compatible with later versions.
+This is a fork of Browsertrix Crawler, with an added deduplication feature. This fork is based on the July 9 2022 version (**0.7.0b**) -- please note that newer versions substantially differ from this code.
+## Deduplication
+TThis feature allows detecting identical pages across different crawls, and skipping them if needed. If activated, this feature will remove already harvested identical pages from the crawl frontier, and thus other links emanating from this page will also not be queued.
 
-The original README follows below.
+This module detects ''identical'' pages by computing a hash of the page and storing it in a Redis database. During each subsequent crawl, the module will compare these current hash of the page and the stored hash of the page, and will unqueue it if these two values match.
+
+Of course, there can be dynamic elements on the page that might change each day (timstamps, tokens, hidden variables). In order for avoid these elements disturb the hash, this module will first remove them from the page's code prior to computing the hash. It does so by applying a set of regular expressions. If an element within the page matches such a regular expression, it will be removed. *Note that such elements are only removed for purposes of hashing, the page itself that is harvested is not affected in any way*.
+
+Since each website is unique and might contain special hidden elements that should be removed, the regular expression system allows the user to define new expressions and include them within the crawler at runtime. It does so by storing these expressions within the same Redis store as the deduplication hashes.
+
+## Example
+
+Here is such a regular expression, stored in the Redis database:
+
+    dedup-regex-pattern:time-div "<time(?:.*?)time>"
+    
+The key here is `dedup-regex-pattern:time-div`, and the value (the regex itself) is `"<time(?:.*?)time>"`. At runtime, the crawler will fetch all values having the key prefix `dedup-regex-pattern` and apply them to he page currently under consideration.
+
+# Activating the deduplication module
+
+In order to activate this module, please launch the crawler with the following options:
+
+  - `crossCrawlDeduplicationRedisUrl`: the URL of the Redis store where the hashes and regexes should be stored
+  - `crossCrawlDeduplicationPolicy`: the deduplication policy: `none` means non deduplication, `curl` means that the page code is fetched using `curl`, and `crawl` means that the page is fetched and interpreted with Puppeteer before being passed on to the deduplication module. We reccommend using `curl` because it is much faster than interpreting the entire page with behaviors using `crawl`.
+
+TThe original README follows below.
 
 # Browsertrix Crawler
 
