@@ -8,7 +8,7 @@ This feature allows detecting identical pages across different crawls, and skipp
 
 This module detects ''identical'' pages by computing a hash of the page and storing it in a Redis database. During each subsequent crawl, the module compares the current hash of the page with the stored value, and will unqueue it if these two values match.
 
-Of course, there can be dynamic elements on the page that might change each day (timestamps, tokens, hidden variables) that have the undesired effect of changing this hash without adding anything ''new''. In order for avoid these elements disturb the hash, this module will first remove them from the page's code prior to computing the hash. It does so by applying a set of regular expressions. If an element within the page matches such a regular expression, it will be removed. *Note that such elements are only removed for purposes of hashing, the page itself that is harvested is not affected in any way*.
+Of course, there can be dynamic elements on the page that might change each day (timestamps, tokens, hidden variables) that have the undesired effect of changing this hash without adding anything ''new''. In order for avoid these elements disturbing the hash, this module will first remove them from the page's code prior to computing the hash. It does so by applying a set of regular expressions. If an element within the page matches such a regular expression, it will be removed. *Note that such elements are only removed for purposes of hashing, the page itself that is harvested is not affected in any way*.
 
 Since each website is unique and might contain special hidden elements that should be removed, the regular expression system allows the user to define new expressions and include them within the crawler at runtime. It does so by storing these expressions within the same Redis store as the deduplication hashes.
 
@@ -18,7 +18,9 @@ Here is such a regular expression, stored in the Redis database:
 
     dedup-regex-pattern:time-div "<time(?:.*?)time>"
     
-The key here is `dedup-regex-pattern:time-div`, and the value (the regex itself) is `"<time(?:.*?)time>"`. At runtime, the crawler will fetch all values having the key prefix `dedup-regex-pattern` and apply them to he page currently under consideration.
+The key here is `dedup-regex-pattern:time-div`, and the value (the regex itself) is `"<time(?:.*?)time>"`. Thus, elements matching this regex will be removed from the page's code before hashing it.
+
+In short, at runtime the crawler will fetch all values having the key prefix `dedup-regex-pattern` and apply them to he page currently under consideration. You can define as many regexes as you want in order to fine-tune your deduplication quality.
 
 # Activating the deduplication module
 
