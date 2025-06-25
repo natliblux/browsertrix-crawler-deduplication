@@ -33,7 +33,7 @@ Here is a full command-line example that runs the crawler using Docker, with cro
 
 At the end of the crawl, Browsertrix outputs some crawl statistics in JSON format. Among these statistics, you can now also find the total amount of deduplicated pages:
 
-````
+```json
 "message":"Crawl statistics",
 "details":{
 	"crawled":1,
@@ -44,7 +44,7 @@ At the end of the crawl, Browsertrix outputs some crawl statistics in JSON forma
 	"pendingPages":[],
 	"dedupedPages":1
 }
-````
+```
 
 Note the added statistic `dedupedPages` at the end of the JSON.
 
@@ -62,7 +62,7 @@ The value corresponding to each key is then the regular expression you wish to u
 
 Consider the HTML snippet:
 
-````
+```html
 <html>
 <head>...</head>
 <body>
@@ -70,7 +70,7 @@ Consider the HTML snippet:
 	<p>The date is: Wed, 25 Jun 2025 06:26:48 GMT</p>
 </body>
 <html>
-````
+```
 
 Since the paragraph `<p>The date is: ...</p>` contains an automatically generated timestamp, it would make no sense to try hashing this page as it would be different each time. Therefore, we need to remove it before hashing.
 
@@ -85,14 +85,14 @@ Now when you run the crawler, it will load this regex:
 
 When it encounters the page above, it will remove the timestamp paragraph before hashing it, because it matches the regex defined previously. Thus, the part of the page that will be visible to the hashing process will be:
 
-````
+```html
 <html>
 <head>...</head>
 <body>
 	Some text.
 </body>
 <html>
-````
+```
 
 Once the crawl is finished, you will see that your Redis database contains the deduplication hash for this URL:
 
