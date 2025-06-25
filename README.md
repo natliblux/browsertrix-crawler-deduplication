@@ -54,7 +54,7 @@ As mentioned before, you can define rules to remove elements on a page from the 
 
     dedup-regex-pattern:<id>
 
-where `id` is simply a name you can give to the rule. You can define as many rules as you want.
+where `id` is simply a name you can give to the rule. You can define as many rules as you want. Note that the deduplication process works perfectly fine without any user-defined rules, it will simply fail to detect dynamically changing elements on a page.
 
 The value corresponding to each key is then the regular expression you wish to use. We will illustrate this with a small example.
 
