@@ -2523,11 +2523,6 @@ async checkForCrossCrawlDeduplication(url: string) {
 	const startPage = new Date();
 	var text = "";
 	let result = await this.awaitProcessGetResultAsString(child_process.spawn("curl", ['-sL' , url]));
-	
-	// Special case for reporter.lu
-	if (url.match(/https:\/\/www\.reporter\.lu.*/)) {
-	 	result = await this.awaitProcessGetResultAsString(child_process.spawn("curl", ['-sL' , url, '--b', 'wordpress_logged_in_bnl=crawler']));
-	}
 	    		  
 	text = result;
 	
