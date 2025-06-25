@@ -9,7 +9,7 @@ A complete example is given below.
 
 # Requirements
 
-A Redis instance.
+The same requirements as the original Browsertrix Crawler, plus a Redis instance for storing deduplication data.
 
 # Build
 
