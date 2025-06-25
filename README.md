@@ -1,5 +1,4 @@
 # Introduction
-
 This is a fork of Browsertrix Crawler, with an added cross-crawl deduplication feature. If activated, it will use a Redis database to store page hashes and look them up during crawl time to deduplicate already visited pages.
 
 Since many pages can have dynamically changing code (such as timestamps, variables, ...), these elements can distort the computed hash in an undesired manner. For this reason, an additional detection algorithm is included in the crawler in order to make the deduplication as effective as possible.
