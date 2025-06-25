@@ -1,3 +1,1 @@
-pywb>=2.6.7
-uwsgi
-wacz>=0.4.6
+wacz>=0.5.0
