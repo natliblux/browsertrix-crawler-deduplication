@@ -98,5 +98,7 @@ Once the crawl is finished, you will see that your Redis database contains the d
 
     redis-cli GET "http://my.test.url"
 
-Thus, each time you run the crawler, it will compare the hash computed at runtime with the hash in the database. This mechanism enables deduplicating pages across independent crawls.
+Thus, each time you run the crawler, it will compare the hash computed at runtime with the hash in the database. 
+
+This mechanism enables deduplicating pages across independent crawls.
 
