@@ -397,6 +397,17 @@ class ArgParser {
           type: "string",
           choices: ["skip", "revisit", "keep"],
         },
+        
+        crossCrawlDeduplication: {
+          describe: "Use a Redis server to store page hashes and perform cross-crawl deduplication.",
+          type: "boolean",
+          default: false
+        },
+      
+        crossCrawlDeduplicationRedisUrl: {
+          describe: "The URL of the Redis store to use for storing cross-crawl deduplication hashes",
+          type: "string"
+        },
 
         profile: {
           describe:

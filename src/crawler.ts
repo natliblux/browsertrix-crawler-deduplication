@@ -17,6 +17,7 @@ import { CrawlerArgs, parseArgs } from "./util/argParser.js";
 import yaml from "js-yaml";
 
 import { WACZ, WACZInitOpts, mergeCDXJ } from "./util/wacz.js";
+import Redis from 'ioredis';
 
 import { HealthChecker } from "./util/healthcheck.js";
 import { TextExtractViaSnapshot } from "./util/textextract.js";
@@ -73,6 +74,13 @@ import { isHTMLMime, isRedirectStatus } from "./util/reqresp.js";
 import { initProxy } from "./util/proxy.js";
 import { initFlow, nextFlowStep } from "./util/flowbehavior.js";
 
+import { Agent as HttpAgent } from 'http';
+import { Agent as HttpsAgent } from 'https';
+
+const HTTP_AGENT = new HttpAgent();
+const HTTPS_AGENT = new HttpsAgent({ rejectUnauthorized: false });
+const HTML_TYPES: string[] = ["text/html", "application/xhtml", "application/xhtml+xml"];
+
 const btrixBehaviors = fs.readFileSync(
   new URL(
     "../node_modules/browsertrix-behaviors/dist/behaviors.js",
@@ -103,6 +111,9 @@ type PageEntry = {
   status?: number;
   depth?: number;
 };
+
+import crypto from 'crypto';
+const shasum = crypto.createHash('sha1')
 
 // ============================================================================
 export class Crawler {
@@ -187,6 +198,11 @@ export class Crawler {
   maxHeapTotal = 0;
 
   proxyServer?: string;
+  
+  // Cross-crawl deduplication
+  redisDedup?: Redis;
+  dedupRegexPatterns = new Array();
+  totalSkipped = 0;
 
   driver:
     | ((opts: {
@@ -310,6 +326,10 @@ export class Crawler {
     this.customBehaviors = "";
 
     this.browser = new Browser();
+    
+    // BnL
+    this.dedupRegexPatterns = new Array();
+    this.totalSkipped = 0;
   }
 
   protected parseArgs() {
@@ -346,7 +366,7 @@ export class Crawler {
     }
 
     let redis;
-
+    
     while (true) {
       try {
         redis = await initRedis(redisUrl);
@@ -393,6 +413,30 @@ export class Crawler {
       logger.setDefaultFatalExitCode(0);
     }
 
+	// -----------------------------------------------------
+	// Check if we have activated cross-crawl deduplication.
+	// -----------------------------------------------------
+	if (this.params.crossCrawlDeduplication) {
+		const redisDedupUrl = this.params.crossCrawlDeduplicationRedisUrl;
+		
+		// Set up Redis for deduplication
+		if (!redisDedupUrl) {
+			throw new Error("Cross-crawl deduplication policy selected but no redis URL specified");
+		}
+		
+		this.redisDedup = await initRedis(redisDedupUrl);
+		console.log("Successfully set up Redis connection for cross-crawl deduplication");
+		
+		// Set up the deduplication regex patterns
+		const dedupRegexPatternKeys = await this.redisDedup!.keys("dedup-regex-pattern:*");
+		for (var i = 0; i < dedupRegexPatternKeys.length; i++) {
+			this.dedupRegexPatterns.push(await this.redisDedup!.get(dedupRegexPatternKeys[i]));
+			console.log("Loaded regex: " + dedupRegexPatternKeys[i] + " - " + await this.redisDedup!.get(dedupRegexPatternKeys[i]))
+		}
+		console.log("Successfully loaded " + dedupRegexPatternKeys.length + " deduplication regex patterns");			 
+	}
+
+	// Done
     return this.crawlState;
   }
 
@@ -1962,6 +2006,8 @@ self.__bx_behaviors.selectMainBehavior();
     const failed = await this.crawlState.numFailed();
     const total = realSize + pendingPages.length + crawled + failed;
     const limit = { max: this.pageLimit || 0, hit: this.limitHit };
+    const dedupedPages = this.totalSkipped;
+    
     const stats = {
       crawled,
       total,
@@ -1969,6 +2015,7 @@ self.__bx_behaviors.selectMainBehavior();
       failed,
       limit,
       pendingPages,
+      dedupedPages
     };
 
     logger.info("Crawl statistics", stats, "crawlStatus");
@@ -2260,7 +2307,7 @@ self.__bx_behaviors.selectMainBehavior();
       // ignore, continue
     }
   }
-
+  
   async awaitPageLoad(frame: Frame, logDetails: LogDetails) {
     if (this.params.behaviorOpts) {
       try {
@@ -2404,6 +2451,119 @@ self.__bx_behaviors.selectMainBehavior();
     }
   }
 
+awaitProcessGetResultAsString(proc: ChildProcess): Promise<string> {
+	var result = '';
+    return new Promise((resolve, reject) => {
+	  
+	  if (!proc.stdout) {
+        return reject(new Error("Process stdout is null"));
+      }
+	
+      proc.stdout.on('data', function(data) {
+         result += data.toString('utf8'); 
+      });
+      
+      proc.on('close', function(code) {
+        resolve(result);
+      });
+      
+    });
+  }
+
+resolveAgent(urlParsed: URL) {
+    return urlParsed.protocol === "https:" ? HTTPS_AGENT : HTTP_AGENT;
+  }
+  
+async isHTML(url: string): Promise<boolean> {
+  try {
+    const resp = await fetch(url, {
+      method: "HEAD",
+      headers: this.headers
+    });
+
+    // If response is not ok, treat as HTML to be safe
+    if (!resp.ok) {
+      // this.debugLog(`Skipping HEAD check ${url}, status ${resp.status}`);
+      return true;
+    }
+
+    // Get content-type header (case-insensitive)
+    const contentType = resp.headers.get("content-type") ?? '';
+
+    if (!contentType) {
+      // No content-type, we assume HTML, to be safe
+      return true;
+    }
+
+    const mime = contentType.split(";")[0].trim().toLowerCase();
+    return HTML_TYPES.includes(mime);
+
+  } catch (e) {
+    // Error fetching HEAD: assume HTML, to be safe
+    return true;
+  }
+}
+
+    
+async checkForCrossCrawlDeduplication(url: string) {
+	
+	if (!await this.isHTML(url)) {
+		return true;
+	}
+	
+	// The connection to Redis, for cross-crawl deduplication hashes, has been already done
+	// during the crawl initialization phase.
+	// 	0. Compute content hashsum,
+	//		-- Remove undesired elements from page beforehand
+	//	1. Compare with redis entry:
+	//		-- if present, do not add to new list
+	//		-- if not present, save (url, hash) in redis db, then add link to new list
+	//	2. Approve/reject url into/from frontier.
+	
+	const startPage = new Date();
+	var text = "";
+	let result = await this.awaitProcessGetResultAsString(child_process.spawn("curl", ['-sL' , url]));
+	
+	// Special case for reporter.lu
+	if (url.match(/https:\/\/www\.reporter\.lu.*/)) {
+	 	result = await this.awaitProcessGetResultAsString(child_process.spawn("curl", ['-sL' , url, '--b', 'wordpress_logged_in_bnl=crawler']));
+	}
+	    		  
+	text = result;
+	
+	const stopPage = new Date();
+	const durationPage = (stopPage.getTime() - startPage.getTime());
+	
+	// Remove unnecessary elements from the page. Note that the "g" flag indicates "replace all", and
+	// the "s" flag takes newlines into account as well.
+	for (var i = 0; i < this.dedupRegexPatterns.length; i++) {
+		text = text.replace(new RegExp(this.dedupRegexPatterns[i], 'gs'),"");
+	}
+
+	// Hash the extracted text
+	const hash = crypto.createHash('sha1').update(text).digest('hex');
+    
+    // The Redis key to check will be just the url, and the value its hash
+	const key = url;
+	const val = await this.redisDedup!.get(key);
+		  
+	if (val) {
+		if ((val === hash)) {
+			// The hash is the same, we skip this url (don't queue it).
+			this.totalSkipped++;
+			//console.log("Skipping URL because it has the same hash as a previous crawl: " + url);
+			return false;
+		}
+	}
+	  
+	// Update the hash for this url
+ 	await this.redisDedup!.set(key,hash);
+    
+    // We can now queue this url
+    return true;
+  }
+
+
   async queueUrl(
     seedId: number,
     url: string,
@@ -2416,6 +2576,16 @@ self.__bx_behaviors.selectMainBehavior();
     if (this.limitHit) {
       return false;
     }
+
+	// Cross-crawl deduplication
+	let shouldQueue = true;
+	if(this.params.crossCrawlDeduplication) {
+	    shouldQueue = await this.checkForCrossCrawlDeduplication(url);
+    }
+
+	if (!shouldQueue) {
+		return false;
+	}
 
     const result = await this.crawlState.addToQueue(
       { url, seedId, depth, extraHops, ts, pageid },
