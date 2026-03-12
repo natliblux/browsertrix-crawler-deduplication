@@ -72,6 +72,13 @@ export class ReplayCrawler extends Crawler {
 
   includeRx: RegExp[];
   excludeRx: RegExp[];
+  
+  // Added by BnL
+  qaPageCount: number = 0;
+  qaMaxUrls: number = 50;
+  qaPolicy: string = "";
+  qaRegex: RegExp = new RegExp("^https?:\\/\\/\\S+$");
+  qaProbability: number = 0.3;
 
   // for qaDebugImageDiff incremental file output
   counter: number = 0;
@@ -84,6 +91,22 @@ export class ReplayCrawler extends Crawler {
     }
     this.qaSource = this.params.qaSource;
     this.replayServer = new ReplayServer(this.qaSource);
+    
+    // Added by BnL
+    if (this.params.qaMaxUrls) {
+    	this.qaMaxUrls = this.params.qaMaxUrls;
+	}
+	if (this.params.qaPolicy) {
+    	this.qaPolicy = this.params.qaPolicy;
+	}
+	if (this.params.qaRegex) {
+    	this.qaRegex = new RegExp(this.params.qaRegex);
+	}
+	if (this.params.qaProbability) {
+    	this.qaProbability = this.params.qaProbability;
+	}
+	// Disable deduplication for the QA
+	this.params.crossCrawlDeduplication = false;
 
     logger.info(
       "Replay Crawl with Source",
@@ -259,10 +282,47 @@ export class ReplayCrawler extends Crawler {
       }
     }
 
-    await this.queueUrl(0, url, depth, 0, {}, ts, id);
+	// Added by BnL
+	// Disable deduplication for the QA
+	this.params.crossCrawlDeduplication = false;
+	// Have we reached the maximum amount of pages allowed?
+	let shouldQueue = false;
+
+	switch (this.qaPolicy) {
+	  case "linear":
+	    shouldQueue = true;
+	    break;
+	
+	  case "regex":
+	    shouldQueue = this.qaRegex.test(url);
+	    break;
+	
+	  case "random":
+	    shouldQueue = Math.random() < this.qaProbability;
+	    break;
+	
+	  default:
+	    // Default is "linear"
+	    shouldQueue = true;
+	    break;
+	}
+
+    if (shouldQueue) {
+	  if (this.qaPageCount >= this.qaMaxUrls) {
+	    return;
+	  }
+	
+	  // Reserve the slot first to prevent races
+	  this.qaPageCount++;
+	
+	  // Queue it!
+	  await this.queueUrl(0, url, depth, 0, {}, ts, id);
+	}
+	    
   }
 
   async loadPagesDirect(pages: ReplayPage[]) {
+	
     let depth = 0;
     for (const entry of pages) {
       if (!entry.url) {

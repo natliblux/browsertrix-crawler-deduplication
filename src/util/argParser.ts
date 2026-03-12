@@ -660,6 +660,31 @@ class ArgParser {
             "if specified, will write crawl.png, replay.png and diff.png for each page where they're different",
           type: "boolean",
         },
+        
+        // Added by BnL
+        qaMaxUrls: {
+          describe:
+            "if specified, will set the maximum number of pages to include in the QA process",
+          type: "number",
+        },
+        
+        qaPolicy: {
+          describe:
+            "defined the kind of QA to perform: linear, regex, random",
+          type: "string",
+        },
+        
+        qaRegex: {
+          describe:
+            "if the QA policy is 'regex', then the regular expression is specified here",
+          type: "string",
+        },
+        
+        qaProbability: {
+          describe:
+            "if the QA policy is 'random', then the probability of processing a URL is specified here",
+          type: "number",
+        },
 
         sshProxyPrivateKeyFile: {
           describe:
